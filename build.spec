@@ -21,6 +21,12 @@ a = Analysis(
         'customtkinter',
         'pandas',
         'numpy',
+        # pandas._typing безусловно импортирует numpy.typing на уровне модуля
+        # (строка "import numpy.typing as npt"). В frozen-сборке PyInstaller
+        # не всегда включает этот подмодуль автоматически — явно добавляем его
+        # в hiddenimports, иначе запуск exe падает с
+        # ModuleNotFoundError: No module named 'numpy.typing'.
+        'numpy.typing',
         'openpyxl',
         # xlrd — нужен для чтения настоящих старых бинарных .xls (engine='xlrd'
         # в load_data). Встроен в exe, чтобы .xls открывались без pip.
@@ -35,7 +41,11 @@ a = Analysis(
     excludes=[
         'matplotlib', 'scipy', 'IPython', 'notebook', 'pytest',
         'PIL', 'Image', 'tkinter.test',
-        'pandas.tests', 'numpy.tests', 'numpy.f2py', 'numpy.typing',
+        'pandas.tests', 'numpy.tests', 'numpy.f2py',
+        # ВАЖНО: numpy.typing НЕ исключаем — pandas._typing импортирует его
+        # на уровне модуля ("import numpy.typing as npt"). При исключении
+        # собранный exe падает с ModuleNotFoundError: No module named
+        # 'numpy.typing' сразу при запуске. Сам пакет лёгкий (несколько .py).
         'sqlite3', 'test', 'unittest', 'pydoc_data',
         'setuptools', 'pkg_resources', 'pip',
         'lxml', 'jinja2', 'pyarrow', 'odf', 'pyxlsb',
