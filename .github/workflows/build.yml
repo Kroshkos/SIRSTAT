@@ -3,11 +3,11 @@ name: Build executable
 on:
   push:
     tags:
-      - 'v*'          # релизный тег
+      - 'v*'          # релизный тег: v1.0.0, v1.2.3-alpha.1, v1.2.3-beta.1 и т.д.
   workflow_dispatch:  # ручной запуск без релиза (только артефакты)
 
 permissions:
-  contents: write     
+  contents: write     # нужен для создания GitHub Release
 
 jobs:
   build:
@@ -165,17 +165,58 @@ jobs:
       - name: Show artifacts
         run: ls -la artifacts
 
+      # Один раз определяем "канал" релиза — используем дальше в теле и в флагах
+      - name: Detect release channel
+        id: channel
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          case "$TAG" in
+            *-alpha*)   CHANNEL="alpha" ;;
+            *-beta*)    CHANNEL="beta" ;;
+            *-rc*)      CHANNEL="rc" ;;
+            *-*)        CHANNEL="prerelease" ;;   # неизвестный суффикс, но всё равно пре-релиз
+            *)          CHANNEL="stable" ;;
+          esac
+          case "$CHANNEL" in
+            stable) IS_PRE="false" ;;
+            *)      IS_PRE="true"  ;;
+          esac
+          echo "channel=$CHANNEL"      >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+          echo "Detected channel: $CHANNEL (prerelease=$IS_PRE)"
+
       - name: Compose release notes
         run: |
           TAG="${GITHUB_REF_NAME}"
+          CHANNEL="${{ steps.channel.outputs.channel }}"
           {
             echo "## SIRSTAT ${TAG}"
             echo
-            if [[ "$TAG" == *"-alpha"* || "$TAG" == *"-beta"* || "$TAG" == *"-rc"* ]]; then
-              echo "> ⚠️ **Pre-release.** Версия выпущена на стадии pre-alpha/альфы:"
-              echo "> функциональность может меняться, найдены не все ошибки."
-              echo
-            fi
+            case "$CHANNEL" in
+              alpha)
+                echo "> 🧪 **Pre-alpha / alpha.** Очень ранняя сборка."
+                echo "> Функциональность нестабильна, интерфейс и формат данных"
+                echo "> могут меняться, возможны потери данных."
+                echo "> **Не используйте в рабочих задачах.**"
+                ;;
+              beta)
+                echo "> 🅱️ **Beta.** Функциональность в целом готова, идёт тестирование."
+                echo "> Возможны ошибки и небольшие изменения API/UI."
+                echo "> Пожалуйста, сообщайте о проблемах в Issues."
+                ;;
+              rc)
+                echo "> 🚦 **Release candidate.** Финальное тестирование перед стабильным релизом."
+                echo "> Если критических ошибок не обнаружено, эта версия станет стабильной."
+                ;;
+              prerelease)
+                echo "> ⚠️ **Pre-release.** Версия выпущена на предварительной стадии."
+                ;;
+              stable)
+                echo "> ✅ **Stable release.** Проверенная стабильная версия,"
+                echo "> рекомендованная для повседневного использования."
+                ;;
+            esac
+            echo
             echo "Автономные (не требуют установленного Python) сборки приложения"
             echo "**SIRSTAT** — обработка микробиологических данных (посевы,"
             echo "антибиотикограммы, эпидемиология, резистентность)."
@@ -196,7 +237,7 @@ jobs:
             echo "предупреждение об источнике."
             echo
             echo "### Автор:"
-            echo "Коршунов Констатин Сергеевич (tg: <https://t.me/kroshkos>)"
+            echo "Коршунов Константин Сергеевич (tg: <https://t.me/kroshkos>)"
           } > release_body.md
           cat release_body.md
 
@@ -208,6 +249,10 @@ jobs:
           body_path: release_body.md
           files: artifacts/*.zip
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          prerelease: ${{ steps.channel.outputs.is_prerelease }}
+          # «Latest» выставляем только для стабильных релизов.
+          # Для prerelease GitHub и так не даст поставить latest,
+          # но явный флаг делает намерение очевидным.
+          make_latest: ${{ steps.channel.outputs.channel == 'stable' && 'true' || 'false' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
