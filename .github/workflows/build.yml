@@ -1,0 +1,212 @@
+name: Build executable
+
+on:
+  push:
+    tags:
+      - 'v*'          # релизный тег: v1.0.0, v1.2.3 и т.д.
+  workflow_dispatch:  # ручной запуск без релиза (только артефакты)
+
+permissions:
+  contents: write     # нужен для создания GitHub Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: microbiology-windows
+            zip_name: SIRSTAT-windows.zip
+            archive_cmd: Compress-Archive -Path "dist/SIRSTAT/*" -DestinationPath "SIRSTAT-windows.zip" -Force
+          - os: macos-latest
+            artifact_name: microbiology-macos
+            zip_name: SIRSTAT-macos.zip
+            archive_cmd: ditto -c -k --sequesterRsrc "dist/SIRSTAT.app" "SIRSTAT-macos.zip"
+    # Секреты подписи (см. SIGNING.md): пустые — сборка выходит без подписи,
+    # workflow при этом не падает.
+    env:
+      WIN_P12_BASE64: ${{ secrets.WIN_CODESIGN_P12_BASE64 }}
+      WIN_P12_PASSWORD: ${{ secrets.WIN_CODESIGN_PASSWORD }}
+      MAC_CERT_BASE64: ${{ secrets.MAC_INSTALLER_CERT_BASE64 }}
+      MAC_CERT_PASSWORD: ${{ secrets.MAC_INSTALLER_CERT_PASSWORD }}
+      MAC_KEYCHAIN_PASSWORD: ${{ secrets.MAC_KEYCHAIN_PASSWORD || 'tmppass' }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Smoke test (import modules)
+        run: python -c "import app_core; print('app_core OK')"
+
+      - name: Build with PyInstaller
+        run: pyinstaller build.spec --noconfirm
+
+      # ---------- Windows: Authenticode-подпись (если заданы секреты) ----------
+      - name: "Windows: import code-signing certificate"
+        if: runner.os == 'Windows' && env.WIN_P12_BASE64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WIN_P12_BASE64))
+          $pwd = ConvertTo-SecureString -String $env:WIN_P12_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pwd | Out-Null
+          Write-Host "Сертификат импортирован."
+
+      - name: "Windows: sign executables"
+        if: runner.os == 'Windows' && env.WIN_P12_BASE64 != ''
+        shell: pwsh
+        run: |
+          $thumb = (Get-ChildItem Cert:\CurrentUser\My |
+                    Where-Object { $_.Extensions.KeyUsage -and
+                                   ($_.Extensions.KeyUsage.KeyUsages -join ',') -match 'DigitalSignature' } |
+                    Select-Object -First 1).Thumbprint
+          if (-not $thumb) { throw "Не найден сертификат подписи в хранилище" }
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" `
+                        -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+                       Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          if (-not $signtool) { throw "signtool.exe не найден в Windows SDK" }
+          & $signtool sign /fd SHA256 /sha1 $thumb /tr http://timestamp.digicert.com /td SHA256 `
+              "dist\SIRSTAT\*.exe" "dist\SIRSTAT\*.dll"
+          if ($LASTEXITCODE -ne 0) { throw "Подпись завершилась с ошибкой" }
+
+      - name: "Windows: verify signature"
+        if: runner.os == 'Windows' && env.WIN_P12_BASE64 != ''
+        shell: pwsh
+        run: Get-AuthenticodeSignature "dist\SIRSTAT\SIRSTAT.exe" | Format-List Status, SignerCertificate
+
+      # ---------- macOS: подпись Developer ID + notarization (если заданы секреты) ----------
+      - name: "macOS: prepare keychain and import certificate"
+        if: runner.os == 'macOS' && env.MAC_CERT_BASE64 != ''
+        run: |
+          set -euo pipefail
+          P12="$RUNNER_TEMP/devid.p12"
+          base64 -D -i <(printf '%s' "$MAC_CERT_BASE64") -o "$P12" || printf '%s' "$MAC_CERT_BASE64" | base64 --decode > "$P12"
+          KC="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "$MAC_KEYCHAIN_PASSWORD" "$KC"
+          security default-keychain -s "$KC"
+          security unlock-keychain -p "$MAC_KEYCHAIN_PASSWORD" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security import "$P12" -k "$KC" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MAC_KEYCHAIN_PASSWORD" "$KC"
+          security find-identity -v -p codesigning "$KC"
+
+      - name: "macOS: codesign app bundle"
+        if: runner.os == 'macOS' && env.MAC_CERT_BASE64 != ''
+        run: |
+          set -euo pipefail
+          IDENTITY=$(security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain-db" |
+                     awk '/Developer ID Application/ { gsub(/.*"/,""); gsub(/".*/,""); print; exit }')
+          test -n "$IDENTITY" || { echo "Developer ID Identity не найден"; exit 1; }
+          APP="dist/SIRSTAT.app"
+          # все вложенные бинарники/фреймворки — ad-hoc внутри общей подписи
+          find "$APP/Contents" \( -name "*.so" -o -name "*.dylib" \) -print0 |
+            xargs -0 -I{} codesign --force --options runtime --timestamp \
+              --sign "$IDENTITY" --deep {} || true
+          codesign --force --options runtime --timestamp --deep \
+            --entitlements macos-entitlements.plist --sign "$IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: "macOS: archive for notarization"
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        run: ditto -c -k --keepParent "dist/SIRSTAT.app" "$RUNNER_TEMP/notarize.zip"
+
+      - name: "macOS: notarize"
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        continue-on-error: false
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            --wait -o notary.json
+          grep -q '"status": "Accepted"' notary.json || { cat notary.json; exit 1; }
+          xcrun stapler staple "dist/SIRSTAT.app"
+          spctl --assess --type execute -vv "dist/SIRSTAT.app" || true
+
+      - name: Archive result
+        shell: pwsh
+        run: ${{ matrix.archive_cmd }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: '*.zip'
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Show artifacts
+        run: ls -la artifacts
+
+      - name: Compose release notes
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          {
+            echo "## SIRSTAT ${TAG}"
+            echo
+            if [[ "$TAG" == *"-alpha"* || "$TAG" == *"-beta"* || "$TAG" == *"-rc"* ]]; then
+              echo "> ⚠️ **Pre-release.** Версия выпущена на стадии pre-alpha/альфы:"
+              echo "> функциональность может меняться, найдены не все ошибки."
+              echo
+            fi
+            echo "Автономные (не требуют установленного Python) сборки приложения"
+            echo "**SIRSTAT** — обработка микробиологических данных (посевы,"
+            echo "антибиотикограммы, эпидемиология, резистентность)."
+            echo
+            echo "### Документация"
+            echo "Полная инструкция пользователя — в README репозитория:"
+            echo "<https://github.com/${GITHUB_REPOSITORY}#%D0%BF%D0%BE%D0%BB%D0%BD%D0%B0%D1%8F-%D0%B8%D0%BD%D1%81%D1%82%D1%80%D1%83%D0%BA%D1%86%D0%B8%D1%8F-%D0%BF%D0%BE%D0%BB%D1%8C%D0%B7%D0%BE%D0%B2%D0%B0%D1%82%D0%B5%D0%BB%D1%8F>"
+            echo
+            echo "### Как запустить"
+            echo "- **Windows**: распакуйте \`SIRSTAT-windows.zip\`, запустите \`SIRSTAT.exe\`."
+            echo "- **macOS**: распакуйте \`SIRSTAT-macos.zip\`, откройте \`SIRSTAT.app\`"
+            echo "  (при первом запуске: правый клик → «Открыть», либо"
+            echo "  \`xattr -dr com.apple.quarantine SIRSTAT.app\`)."
+            echo
+            echo "### Подпись сборок"
+            echo "Если в репозиторий добавлены секреты подписи (см. SIGNING.md),"
+            echo "сборки автоматически подписываются Authenticode (Windows) и"
+            echo "Developer ID + notarization (macOS). Без секретов сборки выходят"
+            echo "неподписанными — антивирусы/SmartScreen могут показывать"
+            echo "предупреждение об источнике."
+          } > release_body.md
+          cat release_body.md
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: SIRSTAT ${{ github.ref_name }}
+          body_path: release_body.md
+          files: artifacts/*.zip
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
