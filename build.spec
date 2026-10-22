@@ -5,6 +5,8 @@
 
 import os
 
+from PyInstaller.utils.hooks import collect_submodules
+
 block_cipher = None
 
 a = Analysis(
@@ -18,6 +20,12 @@ a = Analysis(
          os.path.join('customtkinter', 'assets')),
     ],
     hiddenimports=[
+        # Гарантируем попадание в сборку ВСЕХ подмодулей numpy.typing/numpy._typing:
+        # pandas._typing импортирует numpy.typing безусловно, а сам numpy.typing
+        # при инициализации тянет numpy._typing.* — статический анализ PyInstaller
+        # их не всегда находит, и собранный exe падает с ModuleNotFoundError.
+        *[m for m in collect_submodules('numpy.typing') if '.tests' not in m],
+        *[m for m in collect_submodules('numpy._typing') if '.tests' not in m],
         'customtkinter',
         'pandas',
         'numpy',
