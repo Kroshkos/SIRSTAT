@@ -1,8 +1,3 @@
-# -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec для приложения «Обработка микробиологических данных».
-# Сборка:  pyinstaller build.spec --noconfirm
-# Артефакт: dist/SIRSTAT.app (macOS) / dist/SIRSTAT.exe (Windows)
-
 import os
 
 from PyInstaller.utils.hooks import collect_submodules
