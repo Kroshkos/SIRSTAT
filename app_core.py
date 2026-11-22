@@ -210,7 +210,7 @@ def detect_ab_name_row(df_raw, organism_pos, header_row_idx, log_func=None):
     return max(above, 0)
 
 
-def load_data(filepath, log_func=None):
+def load_data(filepath, log_func=None, for_pdf=False):
     if log_func:
         log_func("Чтение файла…")
     ext = os.path.splitext(str(filepath))[1].lower()
@@ -465,11 +465,16 @@ def load_data(filepath, log_func=None):
     )
 
     data = data.dropna(subset=['material_raw'])
-    # Пустые строки (без микроорганизма и без антибиотикограммы) отбрасываем,
-    # но наличие даты больше не является обязательным
-    data = data[~(data['organism'].isna() & ~data['diagnostic'])]
     data['material_raw'] = data['material_raw'].astype(str).str.strip()
     data['patient_id'] = data['patient_id'].astype(str).str.strip()
+
+    # Финальная фильтрация: для таблиц отбрасываем строки без микроорганизма
+    # и без антибиотикограммы. Для PDF-отчёта нужны ВСЕ пробы (включая "роста нет"),
+    # поэтому фильтрация применяется только если for_pdf=False.
+    if not for_pdf:
+        # Пустые строки (без микроорганизма и без антибиотикограммы) отбрасываем,
+        # но наличие даты больше не является обязательным
+        data = data[~(data['organism'].isna() & ~data['diagnostic'])]
 
     df_main = data[['patient_id', 'date', 'material_raw', 'organism',
                     'is_positive', 'diagnostic', 'clinic']].copy()

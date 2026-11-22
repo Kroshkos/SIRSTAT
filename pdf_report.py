@@ -1,15 +1,11 @@
 # -*- coding: utf-8 -*-
 """
 pdf_report.py — PDF-отчёт для руководителя (SIRSTAT).
-Формат: A4, альбомная ориентация. Дизайн согласован с фирменной палитрой
-интерфейса и тепловой шкалой листов Excel.
+Формат: A4, альбомная ориентация.
 
-Исправления v4:
-  • наложение donut/бары на стр. 2 — разнесены (0.045+0.26 vs 0.48+0.48)
-  • длинные названия выходят за левый край (стр. 3, 4, 5) — left=0.22
-  • полные названия микробов/антибиотиков на стр. 1 (без _short)
-  • защита от 'str' object has no attribute 'size' через _to_series
-  • ffill().bfill() вместо fillna(method=...)
+v6: на стр. 6 добавлена линия R% (резистентные),
+    на стр. 7 добавлен третий бар R% рядом с S% и I%.
+    Формулы: S% = S/(S+I+R)×100, I% = I/(S+I+R)×100, R% = R/(S+I+R)×100.
 """
 import os
 import warnings
@@ -22,7 +18,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import FancyBboxPatch, Rectangle
-import matplotlib.gridspec as gridspec
+from matplotlib.lines import Line2D
 
 from app_core import (
     load_data, categorize_material, DEFAULT_CLINIC_LABEL,
@@ -31,7 +27,7 @@ from app_core import (
 warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 
 # ============================================================
-# ПАЛИТРА (согласована с SIRSTAT: 1.py / app_core.py)
+# ПАЛИТРА
 # ============================================================
 INK        = '#0F172A'
 PRIMARY    = '#1F4E79'
@@ -44,7 +40,6 @@ HAIRLINE   = '#E2E8F0'
 PAPER      = '#FFFFFF'
 PAPER_ALT  = '#F8FAFC'
 
-# Тепловая шкала S% — идентична CMP_SCALES из app_core.py
 S_HEAT = [
     (80.0, '#C6EFCE', '#006100'),
     (60.0, '#E2F0D9', '#375623'),
@@ -56,7 +51,7 @@ S_HEAT = [
 CAT_PALETTE = ['#1F4E79', '#2CC98F', '#3B82F6', '#F59E0B', '#E35D4A',
                '#8B5CF6', '#06B6D4', '#EC4899', '#10B981', '#6366F1']
 
-FIGSIZE = (11.69, 8.27)   # A4 landscape
+FIGSIZE = (11.69, 8.27)
 DPI = 150
 
 
@@ -83,7 +78,6 @@ def _setup_fonts():
 
 
 def _s_heat(pct: float):
-    """(заливка, текст) для значения S%."""
     for th, fg, fc in S_HEAT:
         if pct >= th:
             return fg, fc
@@ -100,7 +94,6 @@ def _pct(num, den):
 
 
 def _to_series(obj, name='value'):
-    """Приводит результат pandas к одноимённому Series (защита от строк)."""
     if isinstance(obj, pd.DataFrame):
         if obj.shape[1] == 1:
             obj = obj.iloc[:, 0]
@@ -114,7 +107,6 @@ def _to_series(obj, name='value'):
 
 
 def _page_shell(fig, title, subtitle):
-    """Единый каркас страницы: акцентная полоса + заголовок + разделитель."""
     fig.patches.append(Rectangle(
         (0, 0.965), 1, 0.035,
         transform=fig.transFigure, facecolor=PRIMARY, edgecolor='none', zorder=5))
@@ -167,7 +159,7 @@ def _wrap(text, width):
 
 
 # ============================================================
-# АГРЕГАЦИЯ ДАННЫХ (с гарантиями типов)
+# АГРЕГАЦИЯ ДАННЫХ
 # ============================================================
 def _compute_report_data(data, antibiotics, ab_indices):
     report = {}
@@ -213,7 +205,7 @@ def _compute_report_data(data, antibiotics, ab_indices):
     report['top_organisms'] = _to_series(
         pos_df['organism'].astype(str).str.strip().value_counts().head(10))
 
-    # --- S% по антибиотикам ---
+    # --- S% / I% / R% по антибиотикам ---
     ab_rows = []
     for ab in antibiotics:
         try:
@@ -226,13 +218,18 @@ def _compute_report_data(data, antibiotics, ab_indices):
         n = s + i_ + r
         if n < 5:
             continue
-        ab_rows.append({'antibiotic': str(ab), 'S%': round((s + i_) / n * 100, 1),
-                        'n': n, 'S': s, 'I': i_, 'R': r})
+        ab_rows.append({
+            'antibiotic': str(ab),
+            'S%': round(s / n * 100, 1),
+            'I%': round(i_ / n * 100, 1),
+            'R%': round(r / n * 100, 1),
+            'n': n, 'S': s, 'I': i_, 'R': r,
+        })
     ab_df = pd.DataFrame(ab_rows)
     report['ab_worst'] = ab_df.nsmallest(10, 'S%') if not ab_df.empty else pd.DataFrame()
     report['ab_best'] = ab_df.nlargest(10, 'S%') if not ab_df.empty else pd.DataFrame()
 
-    # --- S% по микроорганизмам ---
+    # --- S% / I% по микроорганизмам ---
     org_rows = []
     for org in pos_df['organism'].dropna().unique():
         sub = pos_df[pos_df['organism'] == org]
@@ -244,12 +241,16 @@ def _compute_report_data(data, antibiotics, ab_indices):
         n = s + i_ + r
         if n < 10:
             continue
-        org_rows.append({'organism': str(org), 'S%': round((s + i_) / n * 100, 1),
-                         'n': n, 'count': len(sub)})
+        org_rows.append({
+            'organism': str(org),
+            'S%': round(s / n * 100, 1),
+            'I%': round(i_ / n * 100, 1),
+            'n': n, 'count': len(sub),
+        })
     org_df = pd.DataFrame(org_rows)
     report['org_worst'] = org_df.nsmallest(8, 'S%') if not org_df.empty else pd.DataFrame()
 
-    # --- динамика ---
+    # --- динамика по месяцам: S%, I%, R% отдельно ---
     if 'date' in df.columns:
         d = df[df['date'].notna()].copy()
         if not d.empty:
@@ -257,7 +258,7 @@ def _compute_report_data(data, antibiotics, ab_indices):
             m = d.groupby('ym').agg(total=('is_positive', 'size'),
                                     pos=('is_positive', 'sum')).reset_index()
             m['pct_pos'] = (m['pos'] / m['total'] * 100).round(1)
-            sp = []
+            sp, ip, rp = [], [], []
             for _, g in d.groupby('ym'):
                 s = i_ = r = 0
                 for col_i in ab_indices:
@@ -265,8 +266,12 @@ def _compute_report_data(data, antibiotics, ab_indices):
                     s += int((v == 'S').sum()); i_ += int((v == 'I').sum())
                     r += int((v == 'R').sum())
                 nn = s + i_ + r
-                sp.append(round((s + i_) / nn * 100, 1) if nn else np.nan)
+                sp.append(round(s / nn * 100, 1) if nn else np.nan)
+                ip.append(round(i_ / nn * 100, 1) if nn else np.nan)
+                rp.append(round(r / nn * 100, 1) if nn else np.nan)
             m['S%'] = sp
+            m['I%'] = ip
+            m['R%'] = rp
             m['ym_str'] = m['ym'].astype(str)
             report['monthly'] = m.tail(14)
         else:
@@ -274,7 +279,7 @@ def _compute_report_data(data, antibiotics, ab_indices):
     else:
         report['monthly'] = pd.DataFrame()
 
-    # --- клиники ---
+    # --- клиники: S%, I%, R% отдельно ---
     if 'clinic' in df.columns:
         cl_list = [c for c in df['clinic'].dropna().astype(str).str.strip().unique()
                    if c and c != DEFAULT_CLINIC_LABEL]
@@ -288,8 +293,13 @@ def _compute_report_data(data, antibiotics, ab_indices):
                 r += int((v == 'R').sum())
             n = s + i_ + r
             if n >= 10:
-                rows.append({'clinic': cl, 'S%': round((s + i_) / n * 100, 1),
-                             'n': n, 'samples': len(sub)})
+                rows.append({
+                    'clinic': cl,
+                    'S%': round(s / n * 100, 1),
+                    'I%': round(i_ / n * 100, 1),
+                    'R%': round(r / n * 100, 1),
+                    'n': n, 'samples': len(sub),
+                })
         cl_df = pd.DataFrame(rows)
         report['clinics'] = cl_df.sort_values('S%', ascending=False) if not cl_df.empty else pd.DataFrame()
     else:
@@ -302,9 +312,6 @@ def _compute_report_data(data, antibiotics, ab_indices):
 # СТРАНИЦА 1 — СВОДКА
 # ============================================================
 def _build_bullets(report):
-    """Формирует 4–5 коротких выводов для обложки.
-    Названия микроорганизмов и антибиотиков НЕ обрезаются —
-    руководитель должен видеть полные имена."""
     out = []
     kpi = report['kpi']
     out.append(('info', f"{kpi['Всего проб']} проб от {kpi['Пациентов']} пациентов; "
@@ -312,7 +319,6 @@ def _build_bullets(report):
 
     ab_worst = report['ab_worst']
     if not ab_worst.empty:
-        # ПОЛНЫЕ названия — без _short()
         names = ', '.join(str(a) for a in ab_worst['antibiotic'].head(3))
         out.append(('bad', f"Наименьшая чувствительность: {names} — "
                            f"риск неэффективной эмпирической терапии."))
@@ -324,7 +330,6 @@ def _build_bullets(report):
 
     org_worst = report['org_worst']
     if not org_worst.empty:
-        # ПОЛНЫЕ названия микроорганизмов
         names = ', '.join(str(o) for o in org_worst['organism'].head(2))
         out.append(('warn', f"Наиболее устойчивые микроорганизмы: {names}."))
 
@@ -332,8 +337,10 @@ def _build_bullets(report):
     if not cl.empty and len(cl) >= 2:
         best, worst = cl.iloc[0], cl.iloc[-1]
         out.append(('warn', f"Разброс по клиникам: {best['clinic']} "
-                            f"({best['S%']}%) против {worst['clinic']} ({worst['S%']}%)."))
+                            f"(S={best['S%']}%, I={best['I%']}%, R={best['R%']}%) против "
+                            f"{worst['clinic']} (S={worst['S%']}%, I={worst['I%']}%, R={worst['R%']}%)."))
     return out
+
 
 def _page_summary(fig, report):
     _page_shell(fig, 'Сводка ключевых показателей',
@@ -342,8 +349,8 @@ def _page_summary(fig, report):
     kpi = report['kpi']
     items = list(kpi.items())
 
-    # 6 карточек: 3 колонки × 2 ряда, занимают 68% ширины
-    gs = gridspec.GridSpec(2, 3, figure=fig,
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(2, 3, figure=fig,
                   left=0.045, right=0.70, top=0.82, bottom=0.22,
                   wspace=0.10, hspace=0.32)
 
@@ -352,12 +359,10 @@ def _page_summary(fig, report):
         r, c = i // 3, i % 3
         ax = fig.add_subplot(gs[r, c])
         ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis('off')
-        # подложка
         ax.add_patch(FancyBboxPatch((0.0, 0.0), 1.0, 1.0,
                      boxstyle='round,pad=0.008,rounding_size=0.03',
                      facecolor=PAPER_ALT, edgecolor='none',
                      transform=ax.transAxes, zorder=1))
-        # акцентная полоса слева
         ax.add_patch(Rectangle((0.0, 0.0), 0.018, 1.0,
                      facecolor=accents[i], edgecolor='none',
                      transform=ax.transAxes, zorder=2))
@@ -367,8 +372,6 @@ def _page_summary(fig, report):
         ax.text(0.09, 0.22, label, fontsize=10, color=MUTED,
                 va='center', ha='left', transform=ax.transAxes)
 
-    # Правая колонка — «Что важно»
-    # СДВИНУТА ЛЕВЕЕ: 0.735 → 0.72 (чтобы текст не выходил за правый край)
     fig.text(0.72, 0.82, 'Что важно', fontsize=12, fontweight='bold', color=PRIMARY)
     fig.patches.append(Rectangle((0.72, 0.812), 0.22, 0.002,
                  transform=fig.transFigure, facecolor=ACCENT, edgecolor='none'))
@@ -377,18 +380,13 @@ def _page_summary(fig, report):
     y = 0.775
     for kind, text in bullets:
         color = {'ok': ACCENT_DK, 'warn': WARNING, 'bad': DANGER, 'info': PRIMARY}[kind]
-        marker = '●'
-        # СДВИНУТА ЛЕВЕЕ: 0.735 → 0.72
-        fig.text(0.72, y, marker, fontsize=9, color=color, va='top')
-        # УМЕНЬШЕНА ШИРИНА ПЕРЕНОСА: 52 → 42 (чтобы текст помещался)
+        fig.text(0.72, y, '●', fontsize=9, color=color, va='top')
         wrapped = _wrap(text, 42)
         for li, line in enumerate(wrapped):
-            # СДВИНУТА ЛЕВЕЕ: 0.755 → 0.735
             fig.text(0.735, y - li * 0.028, line, fontsize=9.2,
                      color=INK, va='top')
         y -= 0.028 * len(wrapped) + 0.045
 
-    # нижняя плашка-интерпретация
     pct = kpi['% положительных']
     verdict = ('Выявляемость на хорошем уровне' if pct >= 50 else
                'Выявляемость средняя — есть резерв' if pct >= 30 else
@@ -413,7 +411,7 @@ def _page_materials(fig, report):
     cats = report['categories']
     mats = report['top_materials']
 
-    # DONUT: уменьшена ширина (0.30 → 0.26)
+    # DONUT
     ax1 = fig.add_axes([0.045, 0.14, 0.26, 0.66])
     if not cats.empty:
         if len(cats) > 6:
@@ -422,30 +420,57 @@ def _page_materials(fig, report):
             cats_plot = pd.concat([top, rest])
         else:
             cats_plot = cats
+
+        def _autopct(pct):
+            return f'{pct:.0f}%' if pct >= 5 else ''
+
         wedges, _, autotexts = ax1.pie(
-            cats_plot.values, autopct='%1.0f%%', pctdistance=0.78,
+            cats_plot.values, autopct=_autopct, pctdistance=0.78,
             colors=CAT_PALETTE[:len(cats_plot)], startangle=110,
             wedgeprops=dict(width=0.42, edgecolor='white', linewidth=2.5))
+
         for t in autotexts:
-            t.set_fontsize(9); t.set_color('white'); t.set_fontweight('bold')
+            t.set_fontsize(11); t.set_color('white'); t.set_fontweight('bold')
+
+        total = cats_plot.sum()
+        for i, (wedge, val) in enumerate(zip(wedges, cats_plot.values)):
+            pct = val / total * 100
+            if pct < 5:
+                mid_angle = (wedge.theta1 + wedge.theta2) / 2
+                mid_rad = np.deg2rad(mid_angle)
+                r1, r2 = 0.55, 1.05
+                x1, y1 = r1 * np.cos(mid_rad), r1 * np.sin(mid_rad)
+                x2, y2 = r2 * np.cos(mid_rad), r2 * np.sin(mid_rad)
+                ax1.plot([x1, x2], [y1, y2], color='#555', linewidth=1.2, alpha=0.8)
+                ax1.plot(x2, y2, 'o', color='#555', markersize=4)
+                ha = 'left' if x2 > 0 else 'right'
+                label = f"{_short(cats_plot.index[i], 18)} {pct:.1f}%"
+                ax1.text(x2, y2, label, ha=ha, va='center', fontsize=9.5,
+                         color=INK, fontweight='bold',
+                         bbox=dict(boxstyle='round,pad=0.25',
+                                   facecolor='white', edgecolor='#ccc',
+                                   alpha=0.92))
+
         ax1.text(0, 0.08, f"{int(cats_plot.sum()):,}".replace(',', ' '),
                  ha='center', va='center', fontsize=22, fontweight='bold', color=PRIMARY)
         ax1.text(0, -0.16, 'проб', ha='center', va='center', fontsize=10, color=MUTED)
         ax1.legend(wedges, [_short(c, 20) for c in cats_plot.index],
-                   loc='center', bbox_to_anchor=(0.5, -0.18),
+                   loc='center', bbox_to_anchor=(0.5, -0.30),
                    ncol=2, fontsize=8.5, frameon=False, handlelength=1.1,
                    handleheight=1.1, columnspacing=1.2)
     ax1.set_title('Категории материала', fontsize=11, fontweight='bold',
                   color=PRIMARY, pad=14)
 
-    # БАРЫ: сдвинуты правее (0.42 → 0.48), ширина уменьшена (0.545 → 0.48)
-    # Зазор между donut (правый край 0.305) и барами (левый край 0.48) = 0.175
-    ax2 = fig.add_axes([0.48, 0.14, 0.48, 0.66])
+    # БАРЫ: увеличен левый отступ (0.48 → 0.55), уменьшена ширина (0.48 → 0.41)
+    # чтобы вместить многострочные подписи локализаций
+    ax2 = fig.add_axes([0.55, 0.14, 0.41, 0.66])
     if not mats.empty:
         y = np.arange(len(mats))
         bars = ax2.barh(y, mats.values, color=PRIMARY, height=0.62, alpha=0.92)
         ax2.set_yticks(y)
-        ax2.set_yticklabels([_short(m, 28) for m in mats.index], fontsize=9)
+        # ПЕРЕНОС СТРОК вместо обрезки: разбиваем длинные названия
+        wrapped_labels = [_wrap_label(str(m), 22) for m in mats.index]
+        ax2.set_yticklabels(wrapped_labels, fontsize=8, linespacing=1.2)
         ax2.invert_yaxis()
         for b, v in zip(bars, mats.values):
             ax2.text(b.get_width() + mats.values.max() * 0.012,
@@ -458,6 +483,11 @@ def _page_materials(fig, report):
                   color=PRIMARY, pad=14)
 
 
+def _wrap_label(text, width):
+    """Разбивает длинное название на строки по ширине (символы).
+    Возвращает многострочную строку с \\n для matplotlib."""
+    import textwrap
+    return '\n'.join(textwrap.wrap(str(text), width=width))
 # ============================================================
 # СТРАНИЦА 3 — МИКРООРГАНИЗМЫ
 # ============================================================
@@ -466,15 +496,12 @@ def _page_organisms(fig, report):
                 'Топ-10 по частоте выделения из посевов с ростом')
 
     orgs = report['top_organisms']
-    # УВЕЛИЧЕН left: 0.09 → 0.22 (место для длинных названий)
-    # УМЕНЬШЕН width: 0.87 → 0.74 (правый край остаётся на 0.96)
     ax = fig.add_axes([0.22, 0.14, 0.74, 0.68])
     if not orgs.empty:
         y = np.arange(len(orgs))
         cols = [CAT_PALETTE[i % len(CAT_PALETTE)] for i in range(len(orgs))]
         bars = ax.barh(y, orgs.values, color=cols, height=0.66, alpha=0.92)
         ax.set_yticks(y)
-        # УВЕЛИЧЕН лимит обрезки: 34 → 42 символа
         ax.set_yticklabels([_short(o, 42) for o in orgs.index], fontsize=10)
         ax.invert_yaxis()
         total = int(orgs.sum())
@@ -489,15 +516,14 @@ def _page_organisms(fig, report):
 
 
 # ============================================================
-# СТРАНИЦА 4 — АНТИБИОТИКИ: ХУДШИЕ / ЛУЧШИЕ
+# СТРАНИЦА 4 — АНТИБИОТИКИ
 # ============================================================
 def _page_antibiotics(fig, report):
     _page_shell(fig, 'Антибиотикочувствительность',
-                'Доля штаммов, не устойчивых к препарату: (S + I) / (S + I + R) × 100 · порог n ≥ 5')
+                'S% = S/(S+I+R)×100 · I% = I/(S+I+R)×100 · порог n ≥ 5')
 
     worst = report['ab_worst']; best = report['ab_best']
 
-    # ХУДШИЕ: left 0.055 → 0.22, width 0.42 → 0.34
     ax1 = fig.add_axes([0.22, 0.14, 0.34, 0.68])
     if not worst.empty:
         y = np.arange(len(worst))
@@ -508,17 +534,15 @@ def _page_antibiotics(fig, report):
             ax1.text(v + 1.5, y[yy], f"{v}%  ·  n={int(n)}",
                      va='center', fontsize=8.5, color=INK)
         ax1.set_yticks(y)
-        # УВЕЛИЧЕН лимит: 22 → 28 символов
         ax1.set_yticklabels([_short(a, 28) for a in worst['antibiotic']], fontsize=9)
         ax1.invert_yaxis()
         ax1.axvline(50, color=DANGER, linestyle=(0, (4, 3)), linewidth=1.2, alpha=0.7)
         ax1.text(50, -0.7, 'порог 50%', fontsize=7.5, color=DANGER, ha='center')
         ax1.set_xlim(0, 118)
     _clean_axes(ax1, grid_axis='x')
-    ax1.set_title('Зона риска — наименьшая чувствительность',
+    ax1.set_title('Зона риска — наименьшая S%',
                   fontsize=11, fontweight='bold', color=DANGER, pad=12, loc='left')
 
-    # ЛУЧШИЕ: сдвинут правее (0.545 → 0.60), width 0.42 → 0.36
     ax2 = fig.add_axes([0.60, 0.14, 0.36, 0.68])
     if not best.empty:
         y = np.arange(len(best))
@@ -535,7 +559,7 @@ def _page_antibiotics(fig, report):
         ax2.text(80, -0.7, 'цель 80%', fontsize=7.5, color=ACCENT_DK, ha='center')
         ax2.set_xlim(0, 118)
     _clean_axes(ax2, grid_axis='x')
-    ax2.set_title('Опора терапии — наибольшая чувствительность',
+    ax2.set_title('Опора терапии — наибольшая S%',
                   fontsize=11, fontweight='bold', color=ACCENT_DK, pad=12, loc='left')
 
 
@@ -544,10 +568,9 @@ def _page_antibiotics(fig, report):
 # ============================================================
 def _page_org_resistance(fig, report):
     _page_shell(fig, 'Резистентность по микроорганизмам',
-                'Средняя доля «не устойчивых» штаммов по всем испытанным антибиотикам · порог n ≥ 10')
+                'Средняя S% = S/(S+I+R)×100 по всем испытанным антибиотикам · порог n ≥ 10')
 
     worst = report['org_worst']
-    # УВЕЛИЧЕН left: 0.10 → 0.22, width: 0.86 → 0.74
     ax = fig.add_axes([0.22, 0.14, 0.74, 0.68])
     if not worst.empty:
         y = np.arange(len(worst))
@@ -558,7 +581,6 @@ def _page_org_resistance(fig, report):
             ax.text(v + 1.2, y[yy], f"{v}%  ·  n={int(n)}",
                     va='center', fontsize=9, color=INK, fontweight='bold')
         ax.set_yticks(y)
-        # УВЕЛИЧЕН лимит: 32 → 42 символа
         ax.set_yticklabels([_short(o, 42) for o in worst['organism']], fontsize=10)
         ax.invert_yaxis()
         ax.axvline(50, color=DANGER, linestyle=(0, (4, 3)), linewidth=1.2, alpha=0.7)
@@ -567,15 +589,15 @@ def _page_org_resistance(fig, report):
         ax.text(80, len(worst) - 0.2, 'приемлемо', fontsize=8, color=ACCENT_DK, ha='center')
         ax.set_xlim(0, 112)
     _clean_axes(ax, grid_axis='x')
-    ax.set_xlabel('S%, доля «не устойчивых»', fontsize=9, color=MUTED, labelpad=8)
+    ax.set_xlabel('S%, доля чувствительных', fontsize=9, color=MUTED, labelpad=8)
 
 
 # ============================================================
-# СТРАНИЦА 6 — ДИНАМИКА
+# СТРАНИЦА 6 — ДИНАМИКА (S% + I% + R% тремя линиями)
 # ============================================================
 def _page_trend(fig, report):
     _page_shell(fig, 'Динамика показателей',
-                'Помесячно: доля положительных посевов и средняя чувствительность')
+                'Помесячно: доля положительных посевов, S%, I% и R%')
 
     monthly = report['monthly']
     if monthly.empty or len(monthly) < 2:
@@ -592,15 +614,29 @@ def _page_trend(fig, report):
     bars = ax1.bar(x, monthly['pct_pos'].values, color=PRIMARY,
                    width=0.55, alpha=0.88, label='Доля положительных посевов, %')
     ax2 = ax1.twinx()
-    # ИСПРАВЛЕНО: ffill().bfill() вместо fillna(method=...)
+
     s_vals = pd.Series(monthly['S%'].values).ffill().bfill().values
+    i_vals = pd.Series(monthly['I%'].values).ffill().bfill().values
+    r_vals = pd.Series(monthly['R%'].values).ffill().bfill().values
+
+    # S% — тёмно-зелёная сплошная линия с круглыми маркерами
     ax2.plot(x, s_vals, color=ACCENT_DK, linewidth=2.4, marker='o',
              markersize=6, markerfacecolor='white', markeredgecolor=ACCENT_DK,
-             markeredgewidth=1.8, label='S%, средняя чувствительность', zorder=5)
+             markeredgewidth=1.8, label='S% (чувствительные)', zorder=5)
+    # I% — оранжевая пунктирная линия с квадратными маркерами
+    ax2.plot(x, i_vals, color=WARNING, linewidth=2.4, marker='s',
+             markersize=6, markerfacecolor='white', markeredgecolor=WARNING,
+             markeredgewidth=1.8, linestyle='--',
+             label='I% (промежуточные)', zorder=5)
+    # R% — красная штрихпунктирная линия с треугольными маркерами
+    ax2.plot(x, r_vals, color=DANGER, linewidth=2.4, marker='^',
+             markersize=6, markerfacecolor='white', markeredgecolor=DANGER,
+             markeredgewidth=1.8, linestyle='-.',
+             label='R% (резистентные)', zorder=5)
 
     ax1.set_xticks(x); ax1.set_xticklabels(labels, rotation=0, fontsize=8.5)
     ax1.set_ylabel('% положительных', fontsize=9, color=PRIMARY)
-    ax2.set_ylabel('S%, %', fontsize=9, color=ACCENT_DK)
+    ax2.set_ylabel('S% / I% / R%', fontsize=9, color=ACCENT_DK)
     ax1.set_ylim(0, max(float(monthly['pct_pos'].max()) * 1.35, 10))
     ax2.set_ylim(0, 100)
     ax1.tick_params(axis='y', labelcolor=PRIMARY)
@@ -621,7 +657,7 @@ def _page_trend(fig, report):
 
 
 # ============================================================
-# СТРАНИЦА 7 — КЛИНИКИ ИЛИ ВЫВОДЫ
+# СТРАНИЦА 7 — КЛИНИКИ (S%, I%, R% тремя барами)
 # ============================================================
 def _page_clinics(fig, report):
     cl = report['clinics']
@@ -630,35 +666,71 @@ def _page_clinics(fig, report):
         return
 
     _page_shell(fig, 'Сравнение клиник',
-                'Средняя чувствительность (S%) по клиникам · порог n ≥ 10')
+                'S%, I% и R% по клиникам · S% = S/(S+I+R)×100, I% = I/(S+I+R)×100, R% = R/(S+I+R)×100 · порог n ≥ 10')
 
-    ax = fig.add_axes([0.10, 0.16, 0.86, 0.64])
+    ax = fig.add_axes([0.22, 0.16, 0.74, 0.64])
     y = np.arange(len(cl))
-    for yy, (v, n) in enumerate(zip(cl['S%'].values, cl['n'].values)):
-        fg, _ = _s_heat(v)
-        ax.barh(y[yy], v, color=fg, height=0.62,
-                edgecolor='white', linewidth=0.8)
-        ax.text(v + 1.2, y[yy], f"{v}%  ·  n={int(n)}",
-                va='center', fontsize=9, color=INK, fontweight='bold')
+    height = 0.22  # уменьшена для 3 баров (было 0.35 для 2)
+
+    s_vals = cl['S%'].values
+    i_vals = cl['I%'].values
+    r_vals = cl['R%'].values
+
+    # S% — зелёные бары (нижняя треть группы)
+    bars_s = ax.barh(y - height, s_vals, height,
+                     color=ACCENT_DK, alpha=0.9, edgecolor='white',
+                     linewidth=0.8, label='S% (чувствительные)')
+    # I% — оранжевые бары (средняя треть группы)
+    bars_i = ax.barh(y, i_vals, height,
+                     color=WARNING, alpha=0.9, edgecolor='white',
+                     linewidth=0.8, label='I% (промежуточные)')
+    # R% — красные бары (верхняя треть группы)
+    bars_r = ax.barh(y + height, r_vals, height,
+                     color=DANGER, alpha=0.9, edgecolor='white',
+                     linewidth=0.8, label='R% (резистентные)')
+
     ax.set_yticks(y)
     ax.set_yticklabels([str(c) for c in cl['clinic']], fontsize=10)
     ax.invert_yaxis()
-    ax.axvline(80, color=ACCENT_DK, linestyle=(0, (4, 3)), linewidth=1.2, alpha=0.7)
-    ax.axvline(50, color=DANGER, linestyle=(0, (4, 3)), linewidth=1.2, alpha=0.7)
-    ax.set_xlim(0, 112)
-    _clean_axes(ax, grid_axis='x')
-    ax.set_xlabel('S%, доля «не устойчивых»', fontsize=9, color=MUTED, labelpad=8)
 
+    # Подписи значений рядом с барами
+    for yy, (sv, iv, rv) in enumerate(zip(s_vals, i_vals, r_vals)):
+        ax.text(sv + 1.2, y[yy] - height, f"{sv}%",
+                va='center', fontsize=8.5, color=ACCENT_DK, fontweight='bold')
+        ax.text(iv + 1.2, y[yy], f"{iv}%",
+                va='center', fontsize=8.5, color=WARNING, fontweight='bold')
+        ax.text(rv + 1.2, y[yy] + height, f"{rv}%",
+                va='center', fontsize=8.5, color=DANGER, fontweight='bold')
+
+    # xlim — с запасом под подписи
+    max_val = max(float(s_vals.max()), float(i_vals.max()), float(r_vals.max()))
+    ax.set_xlim(0, max_val * 1.20)
+
+    # Пороговые линии
+    ax.axvline(80, color=ACCENT_DK, linestyle=(0, (4, 3)), linewidth=1.2, alpha=0.5)
+    ax.axvline(50, color=DANGER, linestyle=(0, (4, 3)), linewidth=1.2, alpha=0.5)
+
+    _clean_axes(ax, grid_axis='x')
+    ax.set_xlabel('S% / I% / R%', fontsize=9, color=MUTED, labelpad=8)
+
+    # Легенда в правом верхнем углу (поднята выше, чтобы не перекрывать бары)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.0, 1.08),
+              bbox_transform=ax.transAxes, fontsize=9, frameon=True,
+              facecolor='white', edgecolor=HAIRLINE)
+
+    # Нижняя плашка с выводами
     best, worst = cl.iloc[0], cl.iloc[-1]
-    spread = round(best['S%'] - worst['S%'], 1)
+    spread_s = round(best['S%'] - worst['S%'], 1)
+    spread_r = round(worst['R%'] - best['R%'], 1)
     fig.patches.append(FancyBboxPatch((0.045, 0.075), 0.91, 0.055,
                  boxstyle='round,pad=0.006,rounding_size=0.01',
                  facecolor=PAPER_ALT, edgecolor=HAIRLINE, linewidth=0.8,
                  transform=fig.transFigure))
     fig.text(0.075, 0.102,
-             f"Разброс между клиниками: {spread} п.п.   ·   "
-             f"Лучшая: {best['clinic']} ({best['S%']}%)   ·   "
-             f"Требует внимания: {worst['clinic']} ({worst['S%']}%)",
+             f"Разброс S% между клиниками: {spread_s} п.п.   ·   "
+             f"Разброс R%: {spread_r} п.п.   ·   "
+             f"Лучшая: {best['clinic']} (S={best['S%']}%, I={best['I%']}%, R={best['R%']}%)   ·   "
+             f"Требует внимания: {worst['clinic']} (S={worst['S%']}%, I={worst['I%']}%, R={worst['R%']}%)",
              fontsize=10, color=INK, va='center')
 
 
@@ -693,7 +765,7 @@ def generate_pdf_report(input_path, output_path, clinic=None, log_func=None):
     if log_func:
         log_func("PDF: загрузка данных…")
 
-    _, _, data, antibiotics, ab_indices = load_data(input_path, log_func=log_func)
+    _, _, data, antibiotics, ab_indices = load_data(input_path, log_func=log_func, for_pdf=True)
 
     if clinic and 'clinic' in data.columns:
         mask = data['clinic'].astype(str).str.strip() == str(clinic).strip()
