@@ -1,54 +1,64 @@
 import os
-
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
+
+mpl_datas = collect_data_files('matplotlib')
 
 a = Analysis(
     ['1.py'],
     pathex=[],
     binaries=[],
     datas=[
-        # customtkinter: темы/шрифты обязательны для UI в собранном виде.
-        # PyInstaller не собирает пакетные данные customtkinter автоматически.
-        (os.path.join(__import__('sysconfig').get_paths()['purelib'], 'customtkinter', 'assets'),
+        (os.path.join(__import__('sysconfig').get_paths()['purelib'],
+                      'customtkinter', 'assets'),
          os.path.join('customtkinter', 'assets')),
+        *mpl_datas,
     ],
     hiddenimports=[
-        # Гарантируем попадание в сборку ВСЕХ подмодулей numpy.typing/numpy._typing:
-        # pandas._typing импортирует numpy.typing безусловно, а сам numpy.typing
-        # при инициализации тянет numpy._typing.* — статический анализ PyInstaller
-        # их не всегда находит, и собранный exe падает с ModuleNotFoundError.
         *[m for m in collect_submodules('numpy.typing') if '.tests' not in m],
         *[m for m in collect_submodules('numpy._typing') if '.tests' not in m],
         'customtkinter',
         'pandas',
         'numpy',
-        # pandas._typing безусловно импортирует numpy.typing на уровне модуля
-        # (строка "import numpy.typing as npt"). В frozen-сборке PyInstaller
-        # не всегда включает этот подмодуль автоматически — явно добавляем его
-        # в hiddenimports, иначе запуск exe падает с
-        # ModuleNotFoundError: No module named 'numpy.typing'.
         'numpy.typing',
         'openpyxl',
-        # xlrd — нужен для чтения настоящих старых бинарных .xls (engine='xlrd'
-        # в load_data). Встроен в exe, чтобы .xls открывались без pip.
         'xlrd',
+        'matplotlib',
+        'matplotlib.pyplot',
+        'matplotlib.backends',
+        'matplotlib.backends.backend_pdf',
+        'matplotlib.backends.backend_agg',
+        'matplotlib.font_manager',
+        'matplotlib.patches',
+        'matplotlib.gridspec',
+        'matplotlib.lines',
+        'matplotlib.text',
+        'matplotlib.transforms',
+        'matplotlib.ticker',
+        'matplotlib.colors',
+        'matplotlib.cbook',
+        'matplotlib.figure',
+        'matplotlib.axes',
+        'matplotlib.axis',
+        'matplotlib.legend',
+        *[m for m in collect_submodules('matplotlib.backends')],
+        *[m for m in collect_submodules('matplotlib') if '.tests' not in m],
+        'PIL',
+        'PIL.Image',
+        'cycler',
+        'kiwisolver',
+        'fontTools',
+        'pyparsing',
+        'contourpy',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Максимально облегчаем сборку: всё, что не используется приложением,
-    # не попадает в exe — меньше файлов = быстрее запуск (one-dir) и меньше
-    # ложных срабатываний антивирусов.
     excludes=[
-        'matplotlib', 'scipy', 'IPython', 'notebook', 'pytest',
-        'PIL', 'Image', 'tkinter.test',
+        'scipy', 'IPython', 'notebook', 'pytest',
+        'tkinter.test',
         'pandas.tests', 'numpy.tests', 'numpy.f2py',
-        # ВАЖНО: numpy.typing НЕ исключаем — pandas._typing импортирует его
-        # на уровне модуля ("import numpy.typing as npt"). При исключении
-        # собранный exe падает с ModuleNotFoundError: No module named
-        # 'numpy.typing' сразу при запуске. Сам пакет лёгкий (несколько .py).
         'sqlite3', 'test', 'unittest', 'pydoc_data',
         'setuptools', 'pkg_resources', 'pip',
         'lxml', 'jinja2', 'pyarrow', 'odf', 'pyxlsb',
@@ -71,7 +81,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,          # GUI-приложение: консоль не показываем
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
