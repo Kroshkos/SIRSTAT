@@ -56,7 +56,7 @@ jobs:
         run: python -c "import app_core; print('app_core OK')"
 
       - name: Build with PyInstaller
-        run: pyinstaller build.spec --noconfirm
+        run: pyinstaller build.spec --noconfirm --clean
 
       # ---------- Windows: Authenticode-подпись ----------
       - name: "Windows: import code-signing certificate"
