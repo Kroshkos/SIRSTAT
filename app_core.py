@@ -2510,6 +2510,12 @@ def run_pipeline(input_path, output_path, styled=True, log_func=None, extra_shee
     return dict(df_main=df_main, ab_data=ab_data, sheet2=sheet2, sheet3=sheet3,
                 sheet4=sheet4, user_sheets=built_sheets)
 
+def run_pdf_report(input_path: str, output_path: str,
+                   clinic=None, log_func=None):
+    """Публичная обёртка для генерации PDF-отчёта."""
+    from pdf_report import generate_pdf_report
+    return generate_pdf_report(input_path, output_path,
+                               clinic=clinic, log_func=log_func)
 
 def make_per_clinic_output_path(output_path, clinic):
     """«/путь/отчёт.xlsx» + клиника «ВМХ» → «/путь/отчёт — ВМХ.xlsx»."""

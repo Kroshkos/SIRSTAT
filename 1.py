@@ -244,6 +244,14 @@ class App(ctk.CTk):
                       variable=self.styled_var, font=ctk.CTkFont(size=13)
                       ).pack(side="right", padx=6)
 
+        self.pdf_btn = ctk.CTkButton(
+            actions, text="📄 PDF-отчёт для руководителя",
+            width=220, height=40, corner_radius=10,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#8B5CF6", hover_color="#7C3AED",
+            command=self.run_pdf_report)
+        self.pdf_btn.pack(side="right", padx=4)
+
         self.run_btn = ctk.CTkButton(actions, text="▶  Запустить обработку",
                                      width=220, height=40, corner_radius=10,
                                      font=ctk.CTkFont(size=15, weight="bold"),
@@ -662,6 +670,7 @@ class App(ctk.CTk):
             self.progress.stop()
             self.progress.set(0)
             self.run_btn.configure(state="normal", text="▶  Запустить обработку", fg_color=ACCENT)
+            self.pdf_btn.configure(state="normal", text="📄 PDF-отчёт для руководителя")
             self._processing = False
             ok = getattr(self, "_finished_ok", False)
             self._finished.clear()
@@ -669,6 +678,45 @@ class App(ctk.CTk):
                 from tkinter import messagebox
                 messagebox.showerror("Ошибка", "При обработке произошла ошибка.\nПодробности — в журнале.")
         self.after(100, self._poll_log_queue)
+
+    def run_pdf_report(self):
+        """Запуск генерации PDF в фоновом потоке."""
+        input_path = self.input_file.get().strip()
+        if not input_path or not os.path.isfile(input_path):
+            self._error("Сначала выберите исходный файл.")
+            return
+
+        # Путь: рядом с исходным, имя <исходный>_отчёт_руководителя.pdf
+        dirname = os.path.dirname(input_path)
+        basename = os.path.splitext(os.path.basename(input_path))[0]
+        stamp = datetime.now().strftime("%Y%m%d_%H%M")
+        output_path = os.path.join(dirname, f"{basename}_отчёт_{stamp}.pdf")
+
+        # Определяем клинику: если выбрана конкретная — используем её
+        mode = self.clinic_menu.get()
+        clinic = None
+        if mode not in (ALL_CLINICS_LABEL, COMPARE_CLINICS_LABEL, DEFAULT_CLINIC_LABEL):
+            clinic = mode
+
+        self._processing = True
+        self.pdf_btn.configure(state="disabled", text="Формирование PDF…")
+        self.progress.start()
+        self.log("Запуск генерации PDF-отчёта…")
+
+        def task():
+            try:
+                from app_core import run_pdf_report
+                run_pdf_report(input_path, output_path,
+                            clinic=clinic, log_func=self.log)
+                self._log_queue.put(f"✅ PDF-отчёт сохранён: {output_path}")
+                self._finished_ok = True
+            except Exception as e:
+                self._log_queue.put(f"ОШИБКА PDF: {e}")
+                self._finished_ok = False
+            finally:
+                self._finished.set()
+
+        threading.Thread(target=task, daemon=True).start()
 
     def _error(self, text):
         from tkinter import messagebox
