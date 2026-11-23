@@ -1,8 +1,9 @@
 import os
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
+# Данные matplotlib (шрифты, стили, mpl-data) — обязательны для PdfPages
 mpl_datas = collect_data_files('matplotlib')
 
 a = Analysis(
@@ -10,40 +11,58 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
+        # customtkinter: темы/шрифты обязательны для UI
         (os.path.join(__import__('sysconfig').get_paths()['purelib'],
                       'customtkinter', 'assets'),
          os.path.join('customtkinter', 'assets')),
+        # matplotlib: шрифты и стили
         *mpl_datas,
     ],
     hiddenimports=[
-        *[m for m in collect_submodules('numpy.typing') if '.tests' not in m],
-        *[m for m in collect_submodules('numpy._typing') if '.tests' not in m],
+        # numpy.typing — для pandas
+        'numpy.typing',
+        'numpy._typing',
+        # основное
         'customtkinter',
         'pandas',
         'numpy',
-        'numpy.typing',
         'openpyxl',
         'xlrd',
+        # --- matplotlib для PDF-отчёта (явный список только нужного) ---
         'matplotlib',
         'matplotlib.pyplot',
-        'matplotlib.backends',
-        'matplotlib.backends.backend_pdf',
-        'matplotlib.backends.backend_agg',
-        'matplotlib.font_manager',
-        'matplotlib.patches',
-        'matplotlib.gridspec',
-        'matplotlib.lines',
-        'matplotlib.text',
-        'matplotlib.transforms',
-        'matplotlib.ticker',
-        'matplotlib.colors',
-        'matplotlib.cbook',
         'matplotlib.figure',
         'matplotlib.axes',
+        'matplotlib.axes._axes',
+        'matplotlib.axes._base',
         'matplotlib.axis',
+        'matplotlib.backend_bases',
+        'matplotlib.backends',
+        'matplotlib.backends.backend_agg',      # headless-рендер для use('Agg')
+        'matplotlib.backends.backend_pdf',      # PdfPages
+        'matplotlib.cbook',
+        'matplotlib.collections',
+        'matplotlib.colors',
+        'matplotlib.colorbar',
+        'matplotlib.contour',
+        'matplotlib.font_manager',
+        'matplotlib.gridspec',
+        'matplotlib.image',
         'matplotlib.legend',
-        *[m for m in collect_submodules('matplotlib.backends')],
-        *[m for m in collect_submodules('matplotlib') if '.tests' not in m],
+        'matplotlib.lines',
+        'matplotlib.markers',
+        'matplotlib.patches',
+        'matplotlib.path',
+        'matplotlib.projections',
+        'matplotlib.projections.polar',
+        'matplotlib.scale',
+        'matplotlib.spines',
+        'matplotlib.ticker',
+        'matplotlib.transforms',
+        'matplotlib.tri',
+        'matplotlib.type1font',
+        'matplotlib.units',
+        # зависимости matplotlib
         'PIL',
         'PIL.Image',
         'cycler',
@@ -51,15 +70,20 @@ a = Analysis(
         'fontTools',
         'pyparsing',
         'contourpy',
+        'dateutil',
+        'dateutil.rrule',
+        'dateutil.tz',
+        'unittest',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # matplotlib и PIL УБРАНЫ из excludes — они нужны pdf_report.py
         'scipy', 'IPython', 'notebook', 'pytest',
         'tkinter.test',
         'pandas.tests', 'numpy.tests', 'numpy.f2py',
-        'sqlite3', 'test', 'unittest', 'pydoc_data',
+        'sqlite3', 'test', 'pydoc_data',
         'setuptools', 'pkg_resources', 'pip',
         'lxml', 'jinja2', 'pyarrow', 'odf', 'pyxlsb',
     ],

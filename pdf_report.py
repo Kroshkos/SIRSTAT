@@ -17,8 +17,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.gridspec import GridSpec
 from matplotlib.patches import FancyBboxPatch, Rectangle
-from matplotlib.lines import Line2D
 
 from app_core import (
     load_data, categorize_material, DEFAULT_CLINIC_LABEL,
@@ -87,6 +87,13 @@ def _s_heat(pct: float):
 def _short(s, n=26):
     s = str(s)
     return s if len(s) <= n else s[:n - 1] + '…'
+
+
+def _wrap_label(text, width):
+    """Разбивает длинное название на строки по ширине (символы).
+    Возвращает многострочную строку с \\n для matplotlib."""
+    import textwrap
+    return '\n'.join(textwrap.wrap(str(text), width=width))
 
 
 def _pct(num, den):
@@ -349,7 +356,6 @@ def _page_summary(fig, report):
     kpi = report['kpi']
     items = list(kpi.items())
 
-    from matplotlib.gridspec import GridSpec
     gs = GridSpec(2, 3, figure=fig,
                   left=0.045, right=0.70, top=0.82, bottom=0.22,
                   wspace=0.10, hspace=0.32)
@@ -411,7 +417,6 @@ def _page_materials(fig, report):
     cats = report['categories']
     mats = report['top_materials']
 
-    # DONUT
     ax1 = fig.add_axes([0.045, 0.14, 0.26, 0.66])
     if not cats.empty:
         if len(cats) > 6:
@@ -461,14 +466,11 @@ def _page_materials(fig, report):
     ax1.set_title('Категории материала', fontsize=11, fontweight='bold',
                   color=PRIMARY, pad=14)
 
-    # БАРЫ: увеличен левый отступ (0.48 → 0.55), уменьшена ширина (0.48 → 0.41)
-    # чтобы вместить многострочные подписи локализаций
     ax2 = fig.add_axes([0.55, 0.14, 0.41, 0.66])
     if not mats.empty:
         y = np.arange(len(mats))
         bars = ax2.barh(y, mats.values, color=PRIMARY, height=0.62, alpha=0.92)
         ax2.set_yticks(y)
-        # ПЕРЕНОС СТРОК вместо обрезки: разбиваем длинные названия
         wrapped_labels = [_wrap_label(str(m), 22) for m in mats.index]
         ax2.set_yticklabels(wrapped_labels, fontsize=8, linespacing=1.2)
         ax2.invert_yaxis()
@@ -483,11 +485,6 @@ def _page_materials(fig, report):
                   color=PRIMARY, pad=14)
 
 
-def _wrap_label(text, width):
-    """Разбивает длинное название на строки по ширине (символы).
-    Возвращает многострочную строку с \\n для matplotlib."""
-    import textwrap
-    return '\n'.join(textwrap.wrap(str(text), width=width))
 # ============================================================
 # СТРАНИЦА 3 — МИКРООРГАНИЗМЫ
 # ============================================================
@@ -619,16 +616,13 @@ def _page_trend(fig, report):
     i_vals = pd.Series(monthly['I%'].values).ffill().bfill().values
     r_vals = pd.Series(monthly['R%'].values).ffill().bfill().values
 
-    # S% — тёмно-зелёная сплошная линия с круглыми маркерами
     ax2.plot(x, s_vals, color=ACCENT_DK, linewidth=2.4, marker='o',
              markersize=6, markerfacecolor='white', markeredgecolor=ACCENT_DK,
              markeredgewidth=1.8, label='S% (чувствительные)', zorder=5)
-    # I% — оранжевая пунктирная линия с квадратными маркерами
     ax2.plot(x, i_vals, color=WARNING, linewidth=2.4, marker='s',
              markersize=6, markerfacecolor='white', markeredgecolor=WARNING,
              markeredgewidth=1.8, linestyle='--',
              label='I% (промежуточные)', zorder=5)
-    # R% — красная штрихпунктирная линия с треугольными маркерами
     ax2.plot(x, r_vals, color=DANGER, linewidth=2.4, marker='^',
              markersize=6, markerfacecolor='white', markeredgecolor=DANGER,
              markeredgewidth=1.8, linestyle='-.',
@@ -670,21 +664,18 @@ def _page_clinics(fig, report):
 
     ax = fig.add_axes([0.22, 0.16, 0.74, 0.64])
     y = np.arange(len(cl))
-    height = 0.22  # уменьшена для 3 баров (было 0.35 для 2)
+    height = 0.22
 
     s_vals = cl['S%'].values
     i_vals = cl['I%'].values
     r_vals = cl['R%'].values
 
-    # S% — зелёные бары (нижняя треть группы)
     bars_s = ax.barh(y - height, s_vals, height,
                      color=ACCENT_DK, alpha=0.9, edgecolor='white',
                      linewidth=0.8, label='S% (чувствительные)')
-    # I% — оранжевые бары (средняя треть группы)
     bars_i = ax.barh(y, i_vals, height,
                      color=WARNING, alpha=0.9, edgecolor='white',
                      linewidth=0.8, label='I% (промежуточные)')
-    # R% — красные бары (верхняя треть группы)
     bars_r = ax.barh(y + height, r_vals, height,
                      color=DANGER, alpha=0.9, edgecolor='white',
                      linewidth=0.8, label='R% (резистентные)')
@@ -693,7 +684,6 @@ def _page_clinics(fig, report):
     ax.set_yticklabels([str(c) for c in cl['clinic']], fontsize=10)
     ax.invert_yaxis()
 
-    # Подписи значений рядом с барами
     for yy, (sv, iv, rv) in enumerate(zip(s_vals, i_vals, r_vals)):
         ax.text(sv + 1.2, y[yy] - height, f"{sv}%",
                 va='center', fontsize=8.5, color=ACCENT_DK, fontweight='bold')
@@ -702,23 +692,19 @@ def _page_clinics(fig, report):
         ax.text(rv + 1.2, y[yy] + height, f"{rv}%",
                 va='center', fontsize=8.5, color=DANGER, fontweight='bold')
 
-    # xlim — с запасом под подписи
     max_val = max(float(s_vals.max()), float(i_vals.max()), float(r_vals.max()))
     ax.set_xlim(0, max_val * 1.20)
 
-    # Пороговые линии
     ax.axvline(80, color=ACCENT_DK, linestyle=(0, (4, 3)), linewidth=1.2, alpha=0.5)
     ax.axvline(50, color=DANGER, linestyle=(0, (4, 3)), linewidth=1.2, alpha=0.5)
 
     _clean_axes(ax, grid_axis='x')
     ax.set_xlabel('S% / I% / R%', fontsize=9, color=MUTED, labelpad=8)
 
-    # Легенда в правом верхнем углу (поднята выше, чтобы не перекрывать бары)
     ax.legend(loc='upper right', bbox_to_anchor=(1.0, 1.08),
               bbox_transform=ax.transAxes, fontsize=9, frameon=True,
               facecolor='white', edgecolor=HAIRLINE)
 
-    # Нижняя плашка с выводами
     best, worst = cl.iloc[0], cl.iloc[-1]
     spread_s = round(best['S%'] - worst['S%'], 1)
     spread_r = round(worst['R%'] - best['R%'], 1)
@@ -739,7 +725,6 @@ def _page_conclusions(fig, report):
                  'Сформированы автоматически по данным отчёта')
 
     bullets = _build_bullets(report)
-    from matplotlib.gridspec import GridSpec
     gs = GridSpec(len(bullets), 1, figure=fig,
                   left=0.05, right=0.95, top=0.80, bottom=0.12,
                   hspace=0.30)
