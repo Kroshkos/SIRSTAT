@@ -1,4 +1,43 @@
+# Логирование и временные файлы
 *.log
+*.tmp
+*.temp
+
+# Результаты обработки (Excel, PDF)
 *.xlsx
 *.xls
 *.pdf
+*.png
+*.jpg
+*.svg
+*.csv
+
+# Сборки PyInstaller
+dist/
+build/
+SIRSTAT.spec.new
+
+# IDE и редакторы
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Виртуальное окружение (если используется)
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Git
+.git/
+.gitignore
+
+# Scratchpad и временные файлы
+scratchpad/
+temp/
+
+# Документация
+docs/*.md
